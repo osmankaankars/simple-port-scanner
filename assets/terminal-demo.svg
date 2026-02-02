@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1020" />
+      <stop offset="100%" stop-color="#0a0f1a" />
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="675" fill="url(#bg)" rx="18" />
+  <rect x="40" y="40" width="1120" height="595" fill="#0f172a" stroke="#1e293b" rx="12" />
+  <g font-family="SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace" font-size="22" fill="#e2e8f0">
+    <text x="70" y="95" fill="#94a3b8">simple-port-scanner</text>
+    <text x="70" y="140" fill="#22c55e">$</text>
+    <text x="100" y="140">python3 port_scanner.py --host 127.0.0.1 --top20 --service</text>
+
+    <text x="70" y="190">Target: 127.0.0.1 (127.0.0.1)</text>
+    <text x="70" y="220">Ports: 20..5900 (20 total)</text>
+    <text x="70" y="250">Timeout: 0.5s | Workers: 100</text>
+
+    <text x="70" y="310" fill="#22c55e">Open ports:</text>
+    <text x="90" y="340">- 22/tcp (ssh)</text>
+    <text x="90" y="370">- 80/tcp (http)</text>
+
+    <text x="70" y="430" fill="#38bdf8">Summary:</text>
+    <text x="90" y="460">Scanned: 20 | Open: 2 | Closed: 18</text>
+    <text x="90" y="490">Duration: 0.042s</text>
+  </g>
+</svg>

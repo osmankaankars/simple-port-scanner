@@ -1,5 +1,8 @@
 # Simple Port Scanner (Educational)
 
+[![License](https://img.shields.io/github/license/osmankaankars/simple-port-scanner)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+
 Safe-by-default TCP port scanner for learning and testing on systems you own
 or have explicit permission to assess.
 
@@ -18,6 +21,9 @@ or have explicit permission to assess.
 ```bash
 python3 port_scanner.py --host 127.0.0.1 --top20
 ```
+
+## Screenshot
+![Terminal demo](assets/terminal-demo.svg)
 
 ## Usage
 ```bash
@@ -39,6 +45,21 @@ python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --output results.csv
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --open-only --output results.json
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --no-color
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --no-progress
+```
+
+## Example Output
+```text
+Target: 127.0.0.1 (127.0.0.1)
+Ports: 20..5900 (20 total)
+Timeout: 0.5s | Workers: 100
+
+Open ports:
+- 22/tcp (ssh)
+- 80/tcp (http)
+
+Summary:
+Scanned: 20 | Open: 2 | Closed: 18
+Duration: 0.042s
 ```
 
 ## Output
