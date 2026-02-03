@@ -52,6 +52,9 @@ ALLOWED_CONFIG_KEYS = {
     "retry_delay",
     "retry_backoff",
     "retry_on",
+    "banner",
+    "banner_bytes",
+    "banner_timeout",
     "service",
     "open_only",
     "output",
@@ -70,6 +73,9 @@ DEFAULTS = {
     "retry_delay": 0.1,
     "retry_backoff": 2.0,
     "retry_on": "transient",
+    "banner": False,
+    "banner_bytes": 512,
+    "banner_timeout": 0.3,
     "sequential": False,
     "service": False,
     "open_only": False,
@@ -143,6 +149,9 @@ class Settings:
     retry_delay: float
     retry_backoff: float
     retry_on: str
+    banner: bool
+    banner_bytes: int
+    banner_timeout: float
     service: bool
     open_only: bool
     output: Optional[str]
@@ -333,6 +342,9 @@ def merge_settings(args: argparse.Namespace, config: Dict[str, Any]) -> Settings
         retry_delay=float(pick("retry_delay", base_defaults["retry_delay"])),
         retry_backoff=float(pick("retry_backoff", base_defaults["retry_backoff"])),
         retry_on=str(pick("retry_on", base_defaults["retry_on"])),
+        banner=pick_bool("banner", base_defaults["banner"]),
+        banner_bytes=int(pick("banner_bytes", base_defaults["banner_bytes"])),
+        banner_timeout=float(pick("banner_timeout", base_defaults["banner_timeout"])),
         service=pick_bool("service", base_defaults["service"]),
         open_only=pick_bool("open_only", base_defaults["open_only"]),
         output=pick("output"),
@@ -351,6 +363,10 @@ def merge_settings(args: argparse.Namespace, config: Dict[str, Any]) -> Settings
         raise ConfigError("retry_backoff must be 1 or greater.")
     if settings.retry_on not in {"transient", "timeout", "any"}:
         raise ConfigError("retry_on must be one of: transient, timeout, any.")
+    if settings.banner_bytes < 1 or settings.banner_bytes > 8192:
+        raise ConfigError("banner_bytes must be between 1 and 8192.")
+    if settings.banner_timeout < 0:
+        raise ConfigError("banner_timeout must be 0 or greater.")
 
     selection_count = sum(
         [
@@ -542,6 +558,41 @@ def scan_port_with_retries(
     return port, False
 
 
+def grab_banner(
+    ip: str,
+    port: int,
+    family: int,
+    timeout: float,
+    max_bytes: int,
+) -> str:
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            code = sock.connect_ex(address_for_family(ip, port, family))
+            if code != 0:
+                return ""
+            try:
+                data = sock.recv(max_bytes)
+            except socket.timeout:
+                return ""
+            except OSError:
+                return ""
+    except OSError:
+        return ""
+
+    if not data:
+        return ""
+    text = data.decode("utf-8", errors="replace")
+    text = text.replace("\r", "\\r").replace("\n", "\\n")
+    return text.strip()
+
+
+def format_banner_preview(value: str, max_len: int = 120) -> str:
+    if len(value) <= max_len:
+        return value
+    return value[: max_len - 1] + "…"
+
+
 def guess_service(port: int) -> str:
     try:
         return socket.getservbyport(port, "tcp")
@@ -616,7 +667,23 @@ def scan_ports_for_target(
     for port in sorted(ports):
         is_open = port in open_set
         service = guess_service(port) if (is_open and settings.service) else ""
-        results.append({"port": port, "open": is_open, "service": service})
+        banner = ""
+        if is_open and settings.banner:
+            banner = grab_banner(
+                target.ip,
+                port,
+                target.family,
+                settings.banner_timeout,
+                settings.banner_bytes,
+            )
+        results.append(
+            {
+                "port": port,
+                "open": is_open,
+                "service": service,
+                "banner": banner,
+            }
+        )
 
     if show_progress:
         print()
@@ -682,7 +749,7 @@ def write_output(
         with open(path, "w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(
                 handle,
-                fieldnames=["host", "ip", "port", "open", "service", "scanned_at"],
+                fieldnames=["host", "ip", "port", "open", "service", "banner", "scanned_at"],
             )
             writer.writeheader()
             for item in targets:
@@ -697,6 +764,7 @@ def write_output(
                             "port": row["port"],
                             "open": row["open"],
                             "service": row.get("service", ""),
+                            "banner": row.get("banner", ""),
                             "scanned_at": started_at,
                         }
                     )
@@ -723,10 +791,15 @@ def write_output(
             for row in rows:
                 status = "open" if row["open"] else "closed"
                 service = row.get("service") or ""
+                banner = row.get("banner") or ""
                 if service:
-                    handle.write(f"{row['port']}/tcp {status} ({service})\n")
+                    line = f"{row['port']}/tcp {status} ({service})"
                 else:
-                    handle.write(f"{row['port']}/tcp {status}\n")
+                    line = f"{row['port']}/tcp {status}"
+                if banner:
+                    preview = format_banner_preview(banner)
+                    line += f" [banner: {preview}]"
+                handle.write(f"{line}\n")
             handle.write("\n")
 
 
@@ -834,6 +907,24 @@ def main(argv: Iterable[str]) -> int:
         help="Retry on transient errors, only timeouts, or any failure",
     )
     parser.add_argument(
+        "--banner",
+        action="store_true",
+        default=None,
+        help="Attempt to read a simple banner from open ports",
+    )
+    parser.add_argument(
+        "--banner-bytes",
+        type=int,
+        default=None,
+        help="Max bytes to read for a banner (default: 512)",
+    )
+    parser.add_argument(
+        "--banner-timeout",
+        type=float,
+        default=None,
+        help="Timeout for banner read (s)",
+    )
+    parser.add_argument(
         "--service",
         action="store_true",
         help="Try to guess service names for open ports",
@@ -932,6 +1023,11 @@ def main(argv: Iterable[str]) -> int:
             colorize("Retries:", "36", color_enabled),
             f"{settings.retries} | Delay: {settings.retry_delay}s | Backoff: {settings.retry_backoff} | On: {settings.retry_on}",
         )
+    if settings.banner:
+        print(
+            colorize("Banner:", "36", color_enabled),
+            f"{settings.banner_bytes} bytes | Timeout: {settings.banner_timeout}s",
+        )
     if settings.delay > 0:
         print(colorize("Schedule delay:", "36", color_enabled), f"{settings.delay}s")
     print()
@@ -959,10 +1055,14 @@ def main(argv: Iterable[str]) -> int:
             print(colorize("Open ports:", "32", color_enabled))
             for row in open_rows:
                 service = row.get("service") or ""
+                banner = row.get("banner") or ""
                 if service:
-                    print(f"- {row['port']}/tcp ({service})")
+                    line = f"- {row['port']}/tcp ({service})"
                 else:
-                    print(f"- {row['port']}/tcp")
+                    line = f"- {row['port']}/tcp"
+                if banner:
+                    line += f" [banner: {format_banner_preview(banner)}]"
+                print(line)
 
         print()
         print(colorize("Summary:", "36", color_enabled))

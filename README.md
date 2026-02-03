@@ -14,6 +14,7 @@ or have explicit permission to assess.
 - Timeouts, concurrency limits, and optional scheduling delays
 - Retry/backoff for transient failures
 - Rate-limit profiles (stealth, polite, normal, fast)
+- Optional banner grabbing (read-only, off by default)
 - Optional lightweight service guess for open ports
 - Output to text, JSON, or CSV (with open-only option)
 - Safety limit for large target sets (`--max-hosts`)
@@ -73,6 +74,7 @@ Config supports these target keys:
 - `max_hosts` (safety limit)
 - `profile` (rate-limit profile)
 - `retries`, `retry_delay`, `retry_backoff`, `retry_on`
+- `banner`, `banner_bytes`, `banner_timeout`
 
 ## Examples
 ```bash
@@ -91,6 +93,8 @@ python3 port_scanner.py --range 192.168.1.10-192.168.1.50 --top20
 python3 port_scanner.py --host 127.0.0.1 --top20 --profile polite
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --retries 2 --retry-delay 0.1 --retry-backoff 2
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --retry-on timeout --retries 1
+python3 port_scanner.py --host 127.0.0.1 --top20 --banner
+python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --banner --banner-bytes 256 --banner-timeout 0.2
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --output results.json
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --output results.csv
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --open-only --output results.json
