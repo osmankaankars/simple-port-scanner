@@ -1,3 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simple-port-scanner"
+version = "2.0.0.dev0"
+description = "Safe-by-default TCP port scanner for educational use."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "osmankaankars" }]
+keywords = ["port-scanner", "tcp", "networking", "security", "cli"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3 :: Only",
+  "Environment :: Console",
+  "Topic :: Security",
+  "Topic :: System :: Networking",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/osmankaankars/simple-port-scanner"
+Issues = "https://github.com/osmankaankars/simple-port-scanner/issues"
+
+[project.scripts]
+portscan = "port_scanner:cli_main"
+
+[tool.setuptools]
+py-modules = ["port_scanner"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py38"
@@ -5,9 +43,6 @@ target-version = "py38"
 [tool.ruff.lint]
 select = ["E", "F"]
 ignore = ["E501"]
-
-[tool.ruff.format]
-line-length = 120
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

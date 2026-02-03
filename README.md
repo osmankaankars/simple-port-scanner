@@ -24,9 +24,24 @@ or have explicit permission to assess.
 ## Requirements
 - Python 3.8+
 
+## Installation
+```bash
+python3 -m pip install .
+```
+
+For editable install (dev):
+```bash
+python3 -m pip install -e .
+```
+
 ## Quick Start
 ```bash
 python3 port_scanner.py --host 127.0.0.1 --top20
+```
+
+Or use the CLI after install:
+```bash
+portscan --host 127.0.0.1 --top20
 ```
 
 ## Screenshot

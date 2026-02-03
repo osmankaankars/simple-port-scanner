@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 TOOL_NAME = "Simple Port Scanner"
-__version__ = "2.0.0-dev"
+__version__ = "2.0.0.dev0"
 
 
 COMMON_PORTS = [
@@ -1284,4 +1284,8 @@ def main(argv: Iterable[str]) -> int:
 
 
 if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
+
+
+def cli_main() -> None:
     raise SystemExit(main(sys.argv[1:]))
