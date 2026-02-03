@@ -159,3 +159,6 @@ python3 -m pytest
 
 ## License
 MIT. See `LICENSE`.
+
+## Changelog
+See `CHANGELOG.md`.
