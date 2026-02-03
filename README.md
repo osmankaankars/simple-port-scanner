@@ -30,6 +30,35 @@ python3 port_scanner.py --host 127.0.0.1 --top20
 python3 port_scanner.py --help
 ```
 
+## Config File
+You can provide settings via JSON (or YAML if `pyyaml` is installed).
+
+`config.json`:
+```json
+{
+  "host": "127.0.0.1",
+  "top20": true,
+  "timeout": 0.5,
+  "workers": 100,
+  "service": true,
+  "output": "results.json"
+}
+```
+
+Run with:
+```bash
+python3 port_scanner.py --config config.json
+```
+
+YAML example (requires `pip install pyyaml`):
+```yaml
+host: 127.0.0.1
+ports: "22,80,443,8000-8100"
+timeout: 0.5
+workers: 50
+output: results.csv
+```
+
 ## Examples
 ```bash
 python3 port_scanner.py --host 127.0.0.1 --ports 22,80,443
@@ -64,8 +93,8 @@ Duration: 0.042s
 
 ## Output
 - Text output lists `port/tcp` and status.
-- JSON includes `target`, `scanned_ports`, `open_ports`, `duration_seconds`, and `results`.
-- CSV columns are `port`, `open`, and `service`.
+- JSON includes `tool`, `target`, `started_at`, `ended_at`, `scanned_ports`, `open_ports`, `duration_seconds`, and `results`.
+- CSV columns are `port`, `open`, `service`, and `scanned_at`.
 
 ## Safety Notes
 - Only scan targets you own or have permission to test.
