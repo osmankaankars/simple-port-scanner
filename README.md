@@ -12,6 +12,8 @@ or have explicit permission to assess.
 - Custom port lists and ranges (e.g. `22,80,443,8000-8100`)
 - Presets for common ports and top 20 ports
 - Timeouts, concurrency limits, and optional scheduling delays
+- Retry/backoff for transient failures
+- Rate-limit profiles (stealth, polite, normal, fast)
 - Optional lightweight service guess for open ports
 - Output to text, JSON, or CSV (with open-only option)
 - Safety limit for large target sets (`--max-hosts`)
@@ -40,8 +42,7 @@ You can provide settings via JSON (or YAML if `pyyaml` is installed).
 {
   "hosts": "127.0.0.1,::1",
   "top20": true,
-  "timeout": 0.5,
-  "workers": 100,
+  "profile": "polite",
   "service": true,
   "output": "results.json",
   "max_hosts": 1024
@@ -70,6 +71,8 @@ Config supports these target keys:
 - `cidr` (IPv4/IPv6 block)
 - `range` (IP range like `192.168.1.10-192.168.1.50`)
 - `max_hosts` (safety limit)
+- `profile` (rate-limit profile)
+- `retries`, `retry_delay`, `retry_backoff`, `retry_on`
 
 ## Examples
 ```bash
@@ -85,6 +88,9 @@ python3 port_scanner.py --hosts 127.0.0.1,::1 --top20
 python3 port_scanner.py --host-file targets.txt --common
 python3 port_scanner.py --cidr 192.168.1.0/24 --ports 22,80,443 --max-hosts 512
 python3 port_scanner.py --range 192.168.1.10-192.168.1.50 --top20
+python3 port_scanner.py --host 127.0.0.1 --top20 --profile polite
+python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --retries 2 --retry-delay 0.1 --retry-backoff 2
+python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --retry-on timeout --retries 1
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --output results.json
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --output results.csv
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --open-only --output results.json

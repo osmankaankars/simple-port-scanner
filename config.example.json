@@ -1,8 +1,7 @@
 {
   "hosts": "127.0.0.1,::1",
   "top20": true,
-  "timeout": 0.5,
-  "workers": 100,
+  "profile": "polite",
   "service": true,
   "output": "results.json",
   "max_hosts": 1024

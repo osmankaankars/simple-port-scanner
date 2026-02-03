@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import csv
+import errno
 import ipaddress
 import json
 import socket
@@ -39,6 +40,7 @@ ALLOWED_CONFIG_KEYS = {
     "cidr",
     "range",
     "max_hosts",
+    "profile",
     "ports",
     "common",
     "top20",
@@ -46,6 +48,10 @@ ALLOWED_CONFIG_KEYS = {
     "workers",
     "sequential",
     "delay",
+    "retries",
+    "retry_delay",
+    "retry_backoff",
+    "retry_on",
     "service",
     "open_only",
     "output",
@@ -60,6 +66,10 @@ DEFAULTS = {
     "delay": 0.0,
     "format": "auto",
     "max_hosts": 1024,
+    "retries": 0,
+    "retry_delay": 0.1,
+    "retry_backoff": 2.0,
+    "retry_on": "transient",
     "sequential": False,
     "service": False,
     "open_only": False,
@@ -67,6 +77,45 @@ DEFAULTS = {
     "no_progress": False,
     "common": False,
     "top20": False,
+}
+
+RATE_PROFILES = {
+    "stealth": {
+        "workers": 10,
+        "delay": 0.1,
+        "timeout": 1.0,
+        "retries": 1,
+        "retry_delay": 0.2,
+        "retry_backoff": 2.0,
+        "retry_on": "transient",
+    },
+    "polite": {
+        "workers": 50,
+        "delay": 0.02,
+        "timeout": 0.7,
+        "retries": 1,
+        "retry_delay": 0.1,
+        "retry_backoff": 2.0,
+        "retry_on": "transient",
+    },
+    "normal": {
+        "workers": 100,
+        "delay": 0.0,
+        "timeout": 0.5,
+        "retries": 0,
+        "retry_delay": 0.1,
+        "retry_backoff": 2.0,
+        "retry_on": "transient",
+    },
+    "fast": {
+        "workers": 300,
+        "delay": 0.0,
+        "timeout": 0.3,
+        "retries": 0,
+        "retry_delay": 0.05,
+        "retry_backoff": 2.0,
+        "retry_on": "transient",
+    },
 }
 
 
@@ -82,6 +131,7 @@ class Settings:
     cidr: Optional[str]
     host_range: Optional[str]
     max_hosts: int
+    profile: Optional[str]
     ports: Optional[str]
     common: bool
     top20: bool
@@ -89,6 +139,10 @@ class Settings:
     workers: int
     sequential: bool
     delay: float
+    retries: int
+    retry_delay: float
+    retry_backoff: float
+    retry_on: str
     service: bool
     open_only: bool
     output: Optional[str]
@@ -209,6 +263,17 @@ def merge_settings(args: argparse.Namespace, config: Dict[str, Any]) -> Settings
             return bool(config[name])
         return default
 
+    profile_cli = args.profile
+    profile_config = config.get("profile") if "profile" in config else None
+    profile = profile_cli if profile_cli is not None else profile_config
+    base_defaults = dict(DEFAULTS)
+    if profile:
+        if profile not in RATE_PROFILES:
+            raise ConfigError(
+                f"Unknown profile: {profile}. Choose from: {', '.join(sorted(RATE_PROFILES))}."
+            )
+        base_defaults.update(RATE_PROFILES[profile])
+
     targets_cli = {
         "host": args.host,
         "hosts": args.hosts,
@@ -255,24 +320,37 @@ def merge_settings(args: argparse.Namespace, config: Dict[str, Any]) -> Settings
         host_file=host_file,
         cidr=cidr,
         host_range=host_range,
-        max_hosts=int(pick("max_hosts", DEFAULTS["max_hosts"])),
+        max_hosts=int(pick("max_hosts", base_defaults["max_hosts"])),
+        profile=profile,
         ports=ports_value,
         common=common_value,
         top20=top20_value,
-        timeout=float(pick("timeout", DEFAULTS["timeout"])),
-        workers=int(pick("workers", DEFAULTS["workers"])),
-        sequential=pick_bool("sequential", DEFAULTS["sequential"]),
-        delay=float(pick("delay", DEFAULTS["delay"])),
-        service=pick_bool("service", DEFAULTS["service"]),
-        open_only=pick_bool("open_only", DEFAULTS["open_only"]),
+        timeout=float(pick("timeout", base_defaults["timeout"])),
+        workers=int(pick("workers", base_defaults["workers"])),
+        sequential=pick_bool("sequential", base_defaults["sequential"]),
+        delay=float(pick("delay", base_defaults["delay"])),
+        retries=int(pick("retries", base_defaults["retries"])),
+        retry_delay=float(pick("retry_delay", base_defaults["retry_delay"])),
+        retry_backoff=float(pick("retry_backoff", base_defaults["retry_backoff"])),
+        retry_on=str(pick("retry_on", base_defaults["retry_on"])),
+        service=pick_bool("service", base_defaults["service"]),
+        open_only=pick_bool("open_only", base_defaults["open_only"]),
         output=pick("output"),
-        format=str(pick("format", DEFAULTS["format"])),
-        no_color=pick_bool("no_color", DEFAULTS["no_color"]),
-        no_progress=pick_bool("no_progress", DEFAULTS["no_progress"]),
+        format=str(pick("format", base_defaults["format"])),
+        no_color=pick_bool("no_color", base_defaults["no_color"]),
+        no_progress=pick_bool("no_progress", base_defaults["no_progress"]),
     )
 
     if settings.max_hosts < 1:
         raise ConfigError("max_hosts must be at least 1.")
+    if settings.retries < 0:
+        raise ConfigError("retries must be 0 or greater.")
+    if settings.retry_delay < 0:
+        raise ConfigError("retry_delay must be 0 or greater.")
+    if settings.retry_backoff < 1:
+        raise ConfigError("retry_backoff must be 1 or greater.")
+    if settings.retry_on not in {"transient", "timeout", "any"}:
+        raise ConfigError("retry_on must be one of: transient, timeout, any.")
 
     selection_count = sum(
         [
@@ -418,12 +496,50 @@ def address_for_family(ip: str, port: int, family: int) -> Tuple:
         return (ip, port, 0, 0)
     return (ip, port)
 
-
-def scan_port(ip: str, port: int, timeout: float, family: int) -> Tuple[int, bool]:
+def connect_once(ip: str, port: int, timeout: float, family: int) -> int:
     with socket.socket(family, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
-        result = sock.connect_ex(address_for_family(ip, port, family))
-        return port, result == 0
+        return sock.connect_ex(address_for_family(ip, port, family))
+
+
+def should_retry(error_code: int, retry_on: str) -> bool:
+    if retry_on == "any":
+        return True
+    if retry_on == "timeout":
+        return error_code == errno.ETIMEDOUT
+    if retry_on == "transient":
+        return error_code in {
+            errno.ETIMEDOUT,
+            errno.EHOSTUNREACH,
+            errno.ENETUNREACH,
+            errno.ECONNRESET,
+            errno.ECONNABORTED,
+            errno.EADDRNOTAVAIL,
+        }
+    return False
+
+
+def scan_port_with_retries(
+    ip: str,
+    port: int,
+    timeout: float,
+    family: int,
+    retries: int,
+    retry_delay: float,
+    retry_backoff: float,
+    retry_on: str,
+) -> Tuple[int, bool]:
+    delay = retry_delay
+    for attempt in range(retries + 1):
+        code = connect_once(ip, port, timeout, family)
+        if code == 0:
+            return port, True
+        if attempt >= retries or not should_retry(code, retry_on):
+            return port, False
+        if delay > 0:
+            time.sleep(delay)
+        delay *= retry_backoff
+    return port, False
 
 
 def guess_service(port: int) -> str:
@@ -447,7 +563,16 @@ def scan_ports_for_target(
     if settings.sequential:
         done = 0
         for port in ports:
-            port_num, is_open = scan_port(target.ip, port, settings.timeout, target.family)
+            port_num, is_open = scan_port_with_retries(
+                target.ip,
+                port,
+                settings.timeout,
+                target.family,
+                settings.retries,
+                settings.retry_delay,
+                settings.retry_backoff,
+                settings.retry_on,
+            )
             if is_open:
                 open_ports.append(port_num)
             if settings.delay > 0:
@@ -461,7 +586,15 @@ def scan_ports_for_target(
             for port in ports:
                 futures.append(
                     executor.submit(
-                        scan_port, target.ip, port, settings.timeout, target.family
+                        scan_port_with_retries,
+                        target.ip,
+                        port,
+                        settings.timeout,
+                        target.family,
+                        settings.retries,
+                        settings.retry_delay,
+                        settings.retry_backoff,
+                        settings.retry_on,
                     )
                 )
                 if settings.delay > 0:
@@ -633,6 +766,12 @@ def main(argv: Iterable[str]) -> int:
         default=None,
         help="Safety limit for number of targets (default: 1024)",
     )
+    parser.add_argument(
+        "--profile",
+        choices=sorted(RATE_PROFILES),
+        default=None,
+        help="Rate-limit profile (stealth, polite, normal, fast)",
+    )
     ports_group = parser.add_mutually_exclusive_group(required=False)
     ports_group.add_argument(
         "--ports",
@@ -669,6 +808,30 @@ def main(argv: Iterable[str]) -> int:
         type=float,
         default=None,
         help="Delay between scheduling ports (s)",
+    )
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=None,
+        help="Retry failed ports (default: 0)",
+    )
+    parser.add_argument(
+        "--retry-delay",
+        type=float,
+        default=None,
+        help="Delay before first retry (s)",
+    )
+    parser.add_argument(
+        "--retry-backoff",
+        type=float,
+        default=None,
+        help="Backoff multiplier for retries (>= 1.0)",
+    )
+    parser.add_argument(
+        "--retry-on",
+        choices=["transient", "timeout", "any"],
+        default=None,
+        help="Retry on transient errors, only timeouts, or any failure",
     )
     parser.add_argument(
         "--service",
@@ -762,6 +925,13 @@ def main(argv: Iterable[str]) -> int:
         colorize("Timeout:", "36", color_enabled),
         f"{settings.timeout}s | Workers: {settings.workers}",
     )
+    if settings.profile:
+        print(colorize("Profile:", "36", color_enabled), settings.profile)
+    if settings.retries > 0:
+        print(
+            colorize("Retries:", "36", color_enabled),
+            f"{settings.retries} | Delay: {settings.retry_delay}s | Backoff: {settings.retry_backoff} | On: {settings.retry_on}",
+        )
     if settings.delay > 0:
         print(colorize("Schedule delay:", "36", color_enabled), f"{settings.delay}s")
     print()
