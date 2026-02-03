@@ -34,6 +34,11 @@ TOP20_PORTS = [
 
 ALLOWED_CONFIG_KEYS = {
     "host",
+    "hosts",
+    "host_file",
+    "cidr",
+    "range",
+    "max_hosts",
     "ports",
     "common",
     "top20",
@@ -54,6 +59,7 @@ DEFAULTS = {
     "workers": 100,
     "delay": 0.0,
     "format": "auto",
+    "max_hosts": 1024,
     "sequential": False,
     "service": False,
     "open_only": False,
@@ -70,7 +76,12 @@ class ConfigError(RuntimeError):
 
 @dataclass
 class Settings:
-    host: str
+    host: Optional[str]
+    hosts: Optional[str]
+    host_file: Optional[str]
+    cidr: Optional[str]
+    host_range: Optional[str]
+    max_hosts: int
     ports: Optional[str]
     common: bool
     top20: bool
@@ -84,6 +95,22 @@ class Settings:
     format: str
     no_color: bool
     no_progress: bool
+
+
+@dataclass
+class TargetInfo:
+    host: str
+    ip: str
+    family: int
+
+
+@dataclass
+class TargetScanResult:
+    target: TargetInfo
+    results: List[Dict[str, object]]
+    open_total: int
+    scanned_total: int
+    duration_s: float
 
 
 def parse_ports(ports_str: str) -> List[int]:
@@ -122,6 +149,14 @@ def utc_now_iso() -> str:
 
 
 def normalize_ports_value(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return ",".join(str(item) for item in value)
+    return str(value)
+
+
+def normalize_hosts_value(value: Any) -> Optional[str]:
     if value is None:
         return None
     if isinstance(value, list):
@@ -174,9 +209,27 @@ def merge_settings(args: argparse.Namespace, config: Dict[str, Any]) -> Settings
             return bool(config[name])
         return default
 
-    host = pick("host")
-    if not host:
-        raise ConfigError("Host is required (use --host or set host in config).")
+    targets_cli = {
+        "host": args.host,
+        "hosts": args.hosts,
+        "host_file": args.host_file,
+        "cidr": args.cidr,
+        "host_range": args.range,
+    }
+    targets_cli_set = any(value is not None for value in targets_cli.values())
+
+    if targets_cli_set:
+        host = args.host
+        hosts = args.hosts
+        host_file = args.host_file
+        cidr = args.cidr
+        host_range = args.range
+    else:
+        host = config.get("host")
+        hosts = normalize_hosts_value(config.get("hosts")) if "hosts" in config else None
+        host_file = config.get("host_file")
+        cidr = config.get("cidr")
+        host_range = config.get("range")
 
     ports_cli = args.ports
     common_cli = args.common
@@ -198,6 +251,11 @@ def merge_settings(args: argparse.Namespace, config: Dict[str, Any]) -> Settings
 
     settings = Settings(
         host=host,
+        hosts=hosts,
+        host_file=host_file,
+        cidr=cidr,
+        host_range=host_range,
+        max_hosts=int(pick("max_hosts", DEFAULTS["max_hosts"])),
         ports=ports_value,
         common=common_value,
         top20=top20_value,
@@ -212,6 +270,9 @@ def merge_settings(args: argparse.Namespace, config: Dict[str, Any]) -> Settings
         no_color=pick_bool("no_color", DEFAULTS["no_color"]),
         no_progress=pick_bool("no_progress", DEFAULTS["no_progress"]),
     )
+
+    if settings.max_hosts < 1:
+        raise ConfigError("max_hosts must be at least 1.")
 
     selection_count = sum(
         [
@@ -233,6 +294,109 @@ def merge_settings(args: argparse.Namespace, config: Dict[str, Any]) -> Settings
     return settings
 
 
+def parse_host_list(value: str) -> List[str]:
+    parts = [item.strip() for item in value.split(",")]
+    return [item for item in parts if item]
+
+
+def load_hosts_from_file(path: str) -> List[str]:
+    hosts: List[str] = []
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            cleaned = line.strip()
+            if not cleaned or cleaned.startswith("#"):
+                continue
+            hosts.append(cleaned)
+    return hosts
+
+
+def expand_cidr(value: str, remaining: int) -> List[str]:
+    network = ipaddress.ip_network(value, strict=False)
+    host_count = network.num_addresses
+    if network.version == 4 and host_count > 2:
+        host_count -= 2
+    if host_count > remaining:
+        raise ConfigError(
+            f"CIDR expands to {host_count} hosts, which exceeds the remaining limit "
+            f"of {remaining}. Increase --max-hosts to proceed."
+        )
+    return [str(ip) for ip in network.hosts()]
+
+
+def expand_ip_range(value: str, remaining: int) -> List[str]:
+    if "-" not in value:
+        raise ConfigError("IP range must use start-end format, e.g. 192.168.1.10-192.168.1.50")
+    start_s, end_s = value.split("-", 1)
+    start = ipaddress.ip_address(start_s.strip())
+    end = ipaddress.ip_address(end_s.strip())
+    if start.version != end.version:
+        raise ConfigError("IP range start/end must use the same IP version.")
+    if int(start) > int(end):
+        start, end = end, start
+    count = int(end) - int(start) + 1
+    if count > remaining:
+        raise ConfigError(
+            f"IP range expands to {count} hosts, which exceeds the remaining limit "
+            f"of {remaining}. Increase --max-hosts to proceed."
+        )
+    return [str(ipaddress.ip_address(value)) for value in range(int(start), int(end) + 1)]
+
+
+def collect_targets(settings: Settings) -> List[str]:
+    targets: List[str] = []
+    seen = set()
+
+    def add(items: Iterable[str]) -> None:
+        for item in items:
+            if item and item not in seen:
+                targets.append(item)
+                seen.add(item)
+
+    if settings.host:
+        add([settings.host])
+    if settings.hosts:
+        add(parse_host_list(settings.hosts))
+    if settings.host_file:
+        add(load_hosts_from_file(settings.host_file))
+    if settings.cidr:
+        remaining = settings.max_hosts - len(targets)
+        if remaining <= 0:
+            raise ConfigError("Target limit reached. Increase --max-hosts to add CIDR.")
+        add(expand_cidr(settings.cidr, remaining))
+    if settings.host_range:
+        remaining = settings.max_hosts - len(targets)
+        if remaining <= 0:
+            raise ConfigError("Target limit reached. Increase --max-hosts to add range.")
+        add(expand_ip_range(settings.host_range, remaining))
+
+    if not targets:
+        raise ConfigError(
+            "Target selection is required (use --host/--hosts/--host-file/--cidr/--range or set in config)."
+        )
+    if len(targets) > settings.max_hosts:
+        raise ConfigError(
+            f"Target count {len(targets)} exceeds max_hosts {settings.max_hosts}. "
+            "Increase --max-hosts to proceed."
+        )
+    return targets
+
+
+def resolve_target(host: str) -> TargetInfo:
+    try:
+        ip_value = ipaddress.ip_address(host)
+        family = socket.AF_INET6 if ip_value.version == 6 else socket.AF_INET
+        return TargetInfo(host=host, ip=str(ip_value), family=family)
+    except ValueError:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        for family, _socktype, _proto, _canon, sockaddr in infos:
+            if family == socket.AF_INET:
+                return TargetInfo(host=host, ip=sockaddr[0], family=family)
+        for family, _socktype, _proto, _canon, sockaddr in infos:
+            if family == socket.AF_INET6:
+                return TargetInfo(host=host, ip=sockaddr[0], family=family)
+        raise socket.gaierror(f"Unable to resolve host: {host}")
+
+
 def should_show_progress(disabled: bool) -> bool:
     return sys.stdout.isatty() and not disabled
 
@@ -249,18 +413,16 @@ def render_progress(done: int, total: int, started: float) -> None:
     print(line, end="", flush=True)
 
 
-def resolve_host(host: str) -> str:
-    try:
-        ipaddress.ip_address(host)
-        return host
-    except ValueError:
-        return socket.gethostbyname(host)
+def address_for_family(ip: str, port: int, family: int) -> Tuple:
+    if family == socket.AF_INET6:
+        return (ip, port, 0, 0)
+    return (ip, port)
 
 
-def scan_port(host: str, port: int, timeout: float) -> Tuple[int, bool]:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+def scan_port(ip: str, port: int, timeout: float, family: int) -> Tuple[int, bool]:
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
-        result = sock.connect_ex((host, port))
+        result = sock.connect_ex(address_for_family(ip, port, family))
         return port, result == 0
 
 
@@ -271,18 +433,80 @@ def guess_service(port: int) -> str:
         return ""
 
 
+def scan_ports_for_target(
+    target: TargetInfo,
+    ports: List[int],
+    settings: Settings,
+    show_progress: bool,
+) -> TargetScanResult:
+    started = time.monotonic()
+    total_ports = len(ports)
+    open_ports: List[int] = []
+    results: List[Dict[str, object]] = []
+
+    if settings.sequential:
+        done = 0
+        for port in ports:
+            port_num, is_open = scan_port(target.ip, port, settings.timeout, target.family)
+            if is_open:
+                open_ports.append(port_num)
+            if settings.delay > 0:
+                time.sleep(settings.delay)
+            done += 1
+            if show_progress:
+                render_progress(done, total_ports, started)
+    else:
+        with ThreadPoolExecutor(max_workers=settings.workers) as executor:
+            futures = []
+            for port in ports:
+                futures.append(
+                    executor.submit(
+                        scan_port, target.ip, port, settings.timeout, target.family
+                    )
+                )
+                if settings.delay > 0:
+                    time.sleep(settings.delay)
+
+            done = 0
+            last_update = started
+            for future in as_completed(futures):
+                port_num, is_open = future.result()
+                if is_open:
+                    open_ports.append(port_num)
+                done += 1
+                now = time.monotonic()
+                if show_progress and (done == total_ports or (now - last_update) >= 0.1):
+                    render_progress(done, total_ports, started)
+                    last_update = now
+
+    open_set = set(open_ports)
+    for port in sorted(ports):
+        is_open = port in open_set
+        service = guess_service(port) if (is_open and settings.service) else ""
+        results.append({"port": port, "open": is_open, "service": service})
+
+    if show_progress:
+        print()
+
+    duration_s = time.monotonic() - started
+    open_total = sum(1 for row in results if row["open"])
+    return TargetScanResult(
+        target=target,
+        results=results,
+        open_total=open_total,
+        scanned_total=total_ports,
+        duration_s=duration_s,
+    )
+
+
 def write_output(
     path: str,
     fmt: str,
-    target_host: str,
-    target_ip: str,
     started_at: str,
     ended_at: str,
     tool_version: str,
-    results: List[Dict[str, object]],
-    scanned_total: int,
-    open_total: int,
-    duration_s: float,
+    targets: List[TargetScanResult],
+    open_only: bool,
 ) -> None:
     if fmt == "auto":
         if path.lower().endswith(".json"):
@@ -293,16 +517,30 @@ def write_output(
             fmt = "text"
 
     if fmt == "json":
+        scanned_total = sum(item.scanned_total for item in targets)
+        open_total = sum(item.open_total for item in targets)
         payload = {
             "tool": {"name": TOOL_NAME, "version": tool_version},
-            "target": {"host": target_host, "ip": target_ip},
             "started_at": started_at,
             "ended_at": ended_at,
-            "scanned_ports": scanned_total,
-            "open_ports": open_total,
-            "duration_seconds": round(duration_s, 4),
-            "results": results,
+            "targets_scanned": len(targets),
+            "scanned_ports_total": scanned_total,
+            "open_ports_total": open_total,
+            "targets": [],
         }
+        for item in targets:
+            rows = item.results
+            if open_only:
+                rows = [row for row in rows if row["open"]]
+            payload["targets"].append(
+                {
+                    "target": {"host": item.target.host, "ip": item.target.ip},
+                    "scanned_ports": item.scanned_total,
+                    "open_ports": item.open_total,
+                    "duration_seconds": round(item.duration_s, 4),
+                    "results": rows,
+                }
+            )
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2)
         return
@@ -311,34 +549,52 @@ def write_output(
         with open(path, "w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(
                 handle,
-                fieldnames=["port", "open", "service", "scanned_at"],
+                fieldnames=["host", "ip", "port", "open", "service", "scanned_at"],
             )
             writer.writeheader()
-            for row in results:
-                writer.writerow(
-                    {
-                        "port": row["port"],
-                        "open": row["open"],
-                        "service": row.get("service", ""),
-                        "scanned_at": started_at,
-                    }
-                )
+            for item in targets:
+                rows = item.results
+                if open_only:
+                    rows = [row for row in rows if row["open"]]
+                for row in rows:
+                    writer.writerow(
+                        {
+                            "host": item.target.host,
+                            "ip": item.target.ip,
+                            "port": row["port"],
+                            "open": row["open"],
+                            "service": row.get("service", ""),
+                            "scanned_at": started_at,
+                        }
+                    )
         return
 
     with open(path, "w", encoding="utf-8") as handle:
+        scanned_total = sum(item.scanned_total for item in targets)
+        open_total = sum(item.open_total for item in targets)
         handle.write(f"Tool: {TOOL_NAME} {tool_version}\n")
-        handle.write(f"Target: {target_host} ({target_ip})\n")
         handle.write(f"Started: {started_at}\n")
         handle.write(f"Ended: {ended_at}\n")
+        handle.write(f"Targets: {len(targets)}\n")
         handle.write(f"Scanned: {scanned_total} | Open: {open_total}\n")
         handle.write("\n")
-        for row in results:
-            status = "open" if row["open"] else "closed"
-            service = row.get("service") or ""
-            if service:
-                handle.write(f"{row['port']}/tcp {status} ({service})\n")
-            else:
-                handle.write(f"{row['port']}/tcp {status}\n")
+        for item in targets:
+            handle.write(f"Target: {item.target.host} ({item.target.ip})\n")
+            handle.write(
+                f"Scanned: {item.scanned_total} | Open: {item.open_total} | Duration: {item.duration_s:.3f}s\n"
+            )
+            handle.write("\n")
+            rows = item.results
+            if open_only:
+                rows = [row for row in rows if row["open"]]
+            for row in rows:
+                status = "open" if row["open"] else "closed"
+                service = row.get("service") or ""
+                if service:
+                    handle.write(f"{row['port']}/tcp {status} ({service})\n")
+                else:
+                    handle.write(f"{row['port']}/tcp {status}\n")
+            handle.write("\n")
 
 
 def main(argv: Iterable[str]) -> int:
@@ -351,6 +607,32 @@ def main(argv: Iterable[str]) -> int:
         help="Path to JSON/YAML config file",
     )
     parser.add_argument("--host", required=False, help="Target hostname or IP")
+    parser.add_argument(
+        "--hosts",
+        help="Comma-separated list of hosts or IPs",
+        default=None,
+    )
+    parser.add_argument(
+        "--host-file",
+        help="File with one host or IP per line",
+        default=None,
+    )
+    parser.add_argument(
+        "--cidr",
+        help="CIDR block to scan, e.g. 192.168.1.0/24 or 2001:db8::/120",
+        default=None,
+    )
+    parser.add_argument(
+        "--range",
+        help="IP range to scan, e.g. 192.168.1.10-192.168.1.50",
+        default=None,
+    )
+    parser.add_argument(
+        "--max-hosts",
+        type=int,
+        default=None,
+        help="Safety limit for number of targets (default: 1024)",
+    )
     ports_group = parser.add_mutually_exclusive_group(required=False)
     ports_group.add_argument(
         "--ports",
@@ -443,9 +725,9 @@ def main(argv: Iterable[str]) -> int:
         return 2
 
     try:
-        target_ip = resolve_host(settings.host)
-    except socket.gaierror as exc:
-        print(f"Failed to resolve host: {exc}", file=sys.stderr)
+        targets_raw = collect_targets(settings)
+    except ConfigError as exc:
+        print(f"Config error: {exc}", file=sys.stderr)
         return 2
 
     if settings.common or settings.top20:
@@ -468,11 +750,10 @@ def main(argv: Iterable[str]) -> int:
     if settings.sequential:
         settings.workers = 1
 
-    started = time.monotonic()
     started_at = utc_now_iso()
     port_min = min(ports)
     port_max = max(ports)
-    print(colorize("Target:", "36", color_enabled), f"{settings.host} ({target_ip})")
+    print(colorize("Targets:", "36", color_enabled), f"{len(targets_raw)}")
     print(
         colorize("Ports:", "36", color_enabled),
         f"{port_min}..{port_max} ({len(ports)} total)",
@@ -485,115 +766,69 @@ def main(argv: Iterable[str]) -> int:
         print(colorize("Schedule delay:", "36", color_enabled), f"{settings.delay}s")
     print()
 
-    total_ports = len(ports)
-    open_ports: List[int] = []
-    results: List[Dict[str, object]] = []
-    if settings.sequential:
-        done = 0
-        for port in ports:
-            port_num, is_open = scan_port(target_ip, port, settings.timeout)
-            if is_open:
-                open_ports.append(port_num)
-            if settings.delay > 0:
-                time.sleep(settings.delay)
-            done += 1
-            if show_progress:
-                render_progress(done, total_ports, started)
-    else:
-        with ThreadPoolExecutor(max_workers=settings.workers) as executor:
-            futures = []
-            for port in ports:
-                futures.append(
-                    executor.submit(scan_port, target_ip, port, settings.timeout)
-                )
-                if settings.delay > 0:
-                    time.sleep(settings.delay)
+    target_results: List[TargetScanResult] = []
+    failed_targets = 0
 
-            done = 0
-            last_update = started
-            for future in as_completed(futures):
-                port_num, is_open = future.result()
-                if is_open:
-                    open_ports.append(port_num)
-                done += 1
-                now = time.monotonic()
-                if show_progress and (done == total_ports or (now - last_update) >= 0.1):
-                    render_progress(done, total_ports, started)
-                    last_update = now
+    for idx, host in enumerate(targets_raw, start=1):
+        try:
+            target = resolve_target(host)
+        except socket.gaierror as exc:
+            print(colorize("Failed:", "31", color_enabled), f"{host} ({exc})")
+            failed_targets += 1
+            continue
 
-    open_set = set(open_ports)
-    for port in sorted(ports):
-        is_open = port in open_set
-        service = guess_service(port) if (is_open and settings.service) else ""
-        results.append({"port": port, "open": is_open, "service": service})
+        label = f"Target {idx}/{len(targets_raw)}:" if len(targets_raw) > 1 else "Target:"
+        print(colorize(label, "36", color_enabled), f"{target.host} ({target.ip})")
 
-    if show_progress:
-        print()
+        result = scan_ports_for_target(target, ports, settings, show_progress)
+        open_rows = [row for row in result.results if row["open"]]
 
-    ended = time.monotonic()
-    ended_at = utc_now_iso()
-    duration_s = ended - started
+        if not open_rows:
+            print(colorize("No open ports found.", "33", color_enabled))
+        else:
+            print(colorize("Open ports:", "32", color_enabled))
+            for row in open_rows:
+                service = row.get("service") or ""
+                if service:
+                    print(f"- {row['port']}/tcp ({service})")
+                else:
+                    print(f"- {row['port']}/tcp")
 
-    open_ports = [row["port"] for row in results if row["open"]]
-    open_total = len(open_ports)
-
-    output_rows = results
-    if settings.open_only:
-        output_rows = [row for row in results if row["open"]]
-
-    if not open_ports:
-        print(colorize("No open ports found.", "33", color_enabled))
         print()
         print(colorize("Summary:", "36", color_enabled))
-        print(f"Scanned: {len(ports)} | Open: 0 | Closed: {len(ports)}")
-        print(f"Duration: {duration_s:.3f}s")
-        if settings.output:
-            write_output(
-                settings.output,
-                settings.format,
-                settings.host,
-                target_ip,
-                started_at,
-                ended_at,
-                __version__,
-                output_rows,
-                len(ports),
-                open_total,
-                duration_s,
-            )
-            print(colorize("Saved:", "32", color_enabled), settings.output)
-        return 0
+        print(
+            f"Scanned: {result.scanned_total} | Open: {result.open_total} | Closed: {result.scanned_total - result.open_total}"
+        )
+        print(f"Duration: {result.duration_s:.3f}s")
+        print()
+        target_results.append(result)
 
-    print(colorize("Open ports:", "32", color_enabled))
-    for row in results:
-        if not row["open"]:
-            continue
-        service = row.get("service") or ""
-        if service:
-            print(f"- {row['port']}/tcp ({service})")
-        else:
-            print(f"- {row['port']}/tcp")
+    if not target_results:
+        print("No targets could be scanned.", file=sys.stderr)
+        return 2
 
-    print()
-    print(colorize("Summary:", "36", color_enabled))
-    print(
-        f"Scanned: {len(ports)} | Open: {len(open_ports)} | Closed: {len(ports) - len(open_ports)}"
-    )
-    print(f"Duration: {duration_s:.3f}s")
+    ended_at = utc_now_iso()
+
+    if len(target_results) > 1:
+        total_scanned = sum(item.scanned_total for item in target_results)
+        total_open = sum(item.open_total for item in target_results)
+        print(colorize("Overall:", "36", color_enabled))
+        print(
+            f"Targets: {len(target_results)} | Scanned: {total_scanned} | Open: {total_open}"
+        )
+        if failed_targets:
+            print(f"Failed targets: {failed_targets}")
+        print()
 
     if settings.output:
         write_output(
             settings.output,
             settings.format,
-            settings.host,
-            target_ip,
             started_at,
             ended_at,
             __version__,
-            output_rows,
-            len(ports),
-            open_total,
-            duration_s,
+            target_results,
+            settings.open_only,
         )
         print(colorize("Saved:", "32", color_enabled), settings.output)
 

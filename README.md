@@ -7,12 +7,14 @@ Safe-by-default TCP port scanner for learning and testing on systems you own
 or have explicit permission to assess.
 
 ## Features
-- Single host scanning (hostname or IP)
+- IPv4 + IPv6 targets
+- Multiple target sources: single host, list, file, CIDR, or range
 - Custom port lists and ranges (e.g. `22,80,443,8000-8100`)
 - Presets for common ports and top 20 ports
 - Timeouts, concurrency limits, and optional scheduling delays
 - Optional lightweight service guess for open ports
 - Output to text, JSON, or CSV (with open-only option)
+- Safety limit for large target sets (`--max-hosts`)
 
 ## Requirements
 - Python 3.8+
@@ -36,12 +38,13 @@ You can provide settings via JSON (or YAML if `pyyaml` is installed).
 `config.json`:
 ```json
 {
-  "host": "127.0.0.1",
+  "hosts": "127.0.0.1,::1",
   "top20": true,
   "timeout": 0.5,
   "workers": 100,
   "service": true,
-  "output": "results.json"
+  "output": "results.json",
+  "max_hosts": 1024
 }
 ```
 
@@ -49,6 +52,7 @@ Run with:
 ```bash
 python3 port_scanner.py --config config.json
 ```
+See `config.example.json` for a ready-to-copy sample.
 
 YAML example (requires `pip install pyyaml`):
 ```yaml
@@ -58,6 +62,14 @@ timeout: 0.5
 workers: 50
 output: results.csv
 ```
+
+Config supports these target keys:
+- `host` (single target)
+- `hosts` (comma-separated list or YAML list)
+- `host_file` (one target per line)
+- `cidr` (IPv4/IPv6 block)
+- `range` (IP range like `192.168.1.10-192.168.1.50`)
+- `max_hosts` (safety limit)
 
 ## Examples
 ```bash
@@ -69,6 +81,10 @@ python3 port_scanner.py --host 127.0.0.1 --top20
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --sequential
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --delay 0.01
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --service
+python3 port_scanner.py --hosts 127.0.0.1,::1 --top20
+python3 port_scanner.py --host-file targets.txt --common
+python3 port_scanner.py --cidr 192.168.1.0/24 --ports 22,80,443 --max-hosts 512
+python3 port_scanner.py --range 192.168.1.10-192.168.1.50 --top20
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --output results.json
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --output results.csv
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --open-only --output results.json
@@ -78,9 +94,11 @@ python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --no-progress
 
 ## Example Output
 ```text
-Target: 127.0.0.1 (127.0.0.1)
+Targets: 1
 Ports: 20..5900 (20 total)
 Timeout: 0.5s | Workers: 100
+
+Target: 127.0.0.1 (127.0.0.1)
 
 Open ports:
 - 22/tcp (ssh)
@@ -93,8 +111,8 @@ Duration: 0.042s
 
 ## Output
 - Text output lists `port/tcp` and status.
-- JSON includes `tool`, `target`, `started_at`, `ended_at`, `scanned_ports`, `open_ports`, `duration_seconds`, and `results`.
-- CSV columns are `port`, `open`, `service`, and `scanned_at`.
+- JSON includes `tool`, `started_at`, `ended_at`, `targets_scanned`, totals, and per-target results.
+- CSV columns are `host`, `ip`, `port`, `open`, `service`, and `scanned_at`.
 
 ## Safety Notes
 - Only scan targets you own or have permission to test.
