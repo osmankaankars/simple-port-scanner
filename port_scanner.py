@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 TOOL_NAME = "Simple Port Scanner"
-__version__ = "2.0.0.dev0"
+__version__ = "2.0.0"
 
 
 COMMON_PORTS = [
