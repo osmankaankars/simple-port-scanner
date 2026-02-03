@@ -2,6 +2,7 @@
 
 [![License](https://img.shields.io/github/license/osmankaankars/simple-port-scanner)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![CI](https://github.com/osmankaankars/simple-port-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/osmankaankars/simple-port-scanner/actions/workflows/ci.yml)
 
 Safe-by-default TCP port scanner for learning and testing on systems you own
 or have explicit permission to assess.
@@ -127,7 +128,15 @@ Duration: 0.042s
 ## Output
 - Text output lists `port/tcp` and status.
 - JSON includes `tool`, `started_at`, `ended_at`, `targets_scanned`, totals, and per-target results.
-- CSV columns are `host`, `ip`, `port`, `open`, `service`, and `scanned_at`.
+- CSV columns are `host`, `ip`, `port`, `open`, `service`, `banner`, and `scanned_at`.
+
+## Development
+```bash
+python3 -m pip install -r requirements-dev.txt
+ruff check .
+ruff format --check .
+python3 -m pytest
+```
 
 ## Safety Notes
 - Only scan targets you own or have permission to test.
