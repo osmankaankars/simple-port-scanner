@@ -18,6 +18,7 @@ or have explicit permission to assess.
 - Optional lightweight service guess for open ports
 - Output to text, JSON, or CSV (with open-only option)
 - Safety limit for large target sets (`--max-hosts`)
+- Async scanning engine with thread fallback (`--engine`)
 
 ## Requirements
 - Python 3.8+
@@ -43,6 +44,7 @@ You can provide settings via JSON (or YAML if `pyyaml` is installed).
 {
   "hosts": "127.0.0.1,::1",
   "top20": true,
+  "engine": "async",
   "profile": "polite",
   "service": true,
   "output": "results.json",
@@ -75,6 +77,7 @@ Config supports these target keys:
 - `profile` (rate-limit profile)
 - `retries`, `retry_delay`, `retry_backoff`, `retry_on`
 - `banner`, `banner_bytes`, `banner_timeout`
+- `engine` (`async` or `thread`)
 
 ## Examples
 ```bash
@@ -95,6 +98,7 @@ python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --retries 2 --retry-dela
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --retry-on timeout --retries 1
 python3 port_scanner.py --host 127.0.0.1 --top20 --banner
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --banner --banner-bytes 256 --banner-timeout 0.2
+python3 port_scanner.py --host 127.0.0.1 --top20 --engine thread
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --output results.json
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --output results.csv
 python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --open-only --output results.json
@@ -105,6 +109,7 @@ python3 port_scanner.py --host 127.0.0.1 --ports 1-1024 --no-progress
 ## Example Output
 ```text
 Targets: 1
+Engine: async
 Ports: 20..5900 (20 total)
 Timeout: 0.5s | Workers: 100
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import asyncio
 import csv
 import errno
 import ipaddress
@@ -40,6 +41,7 @@ ALLOWED_CONFIG_KEYS = {
     "cidr",
     "range",
     "max_hosts",
+    "engine",
     "profile",
     "ports",
     "common",
@@ -64,6 +66,7 @@ ALLOWED_CONFIG_KEYS = {
 }
 
 DEFAULTS = {
+    "engine": "async",
     "timeout": 0.5,
     "workers": 100,
     "delay": 0.0,
@@ -137,6 +140,7 @@ class Settings:
     cidr: Optional[str]
     host_range: Optional[str]
     max_hosts: int
+    engine: str
     profile: Optional[str]
     ports: Optional[str]
     common: bool
@@ -330,6 +334,7 @@ def merge_settings(args: argparse.Namespace, config: Dict[str, Any]) -> Settings
         cidr=cidr,
         host_range=host_range,
         max_hosts=int(pick("max_hosts", base_defaults["max_hosts"])),
+        engine=str(pick("engine", base_defaults["engine"])),
         profile=profile,
         ports=ports_value,
         common=common_value,
@@ -355,6 +360,8 @@ def merge_settings(args: argparse.Namespace, config: Dict[str, Any]) -> Settings
 
     if settings.max_hosts < 1:
         raise ConfigError("max_hosts must be at least 1.")
+    if settings.engine not in {"async", "thread"}:
+        raise ConfigError("engine must be either 'async' or 'thread'.")
     if settings.retries < 0:
         raise ConfigError("retries must be 0 or greater.")
     if settings.retry_delay < 0:
@@ -558,6 +565,14 @@ def scan_port_with_retries(
     return port, False
 
 
+def decode_banner_bytes(data: bytes) -> str:
+    if not data:
+        return ""
+    text = data.decode("utf-8", errors="replace")
+    text = text.replace("\r", "\\r").replace("\n", "\\n")
+    return text.strip()
+
+
 def grab_banner(
     ip: str,
     port: int,
@@ -580,11 +595,79 @@ def grab_banner(
     except OSError:
         return ""
 
-    if not data:
-        return ""
-    text = data.decode("utf-8", errors="replace")
-    text = text.replace("\r", "\\r").replace("\n", "\\n")
-    return text.strip()
+    return decode_banner_bytes(data)
+
+
+async def async_connect_socket(
+    ip: str,
+    port: int,
+    family: int,
+    timeout: float,
+) -> Tuple[int, Optional[socket.socket]]:
+    loop = asyncio.get_running_loop()
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    sock.setblocking(False)
+    try:
+        await asyncio.wait_for(
+            loop.sock_connect(sock, address_for_family(ip, port, family)),
+            timeout=timeout,
+        )
+        return 0, sock
+    except asyncio.TimeoutError:
+        sock.close()
+        return errno.ETIMEDOUT, None
+    except OSError as exc:
+        code = exc.errno or errno.ECONNREFUSED
+        sock.close()
+        return code, None
+
+
+async def async_read_banner(
+    sock: socket.socket,
+    timeout: float,
+    max_bytes: int,
+) -> bytes:
+    loop = asyncio.get_running_loop()
+    try:
+        data = await asyncio.wait_for(loop.sock_recv(sock, max_bytes), timeout=timeout)
+        return data
+    except asyncio.TimeoutError:
+        return b""
+    except OSError:
+        return b""
+
+
+async def async_scan_port_with_retries(
+    ip: str,
+    port: int,
+    timeout: float,
+    family: int,
+    retries: int,
+    retry_delay: float,
+    retry_backoff: float,
+    retry_on: str,
+    banner_enabled: bool,
+    banner_timeout: float,
+    banner_bytes: int,
+) -> Tuple[int, bool, str]:
+    delay = retry_delay
+    for attempt in range(retries + 1):
+        code, sock = await async_connect_socket(ip, port, family, timeout)
+        if code == 0 and sock:
+            banner = ""
+            try:
+                if banner_enabled:
+                    data = await async_read_banner(sock, banner_timeout, banner_bytes)
+                    banner = decode_banner_bytes(data)
+            finally:
+                sock.close()
+            return port, True, banner
+        if attempt >= retries or not should_retry(code, retry_on):
+            return port, False, ""
+        if delay > 0:
+            await asyncio.sleep(delay)
+        delay *= retry_backoff
+    return port, False, ""
 
 
 def format_banner_preview(value: str, max_len: int = 120) -> str:
@@ -600,7 +683,7 @@ def guess_service(port: int) -> str:
         return ""
 
 
-def scan_ports_for_target(
+def scan_ports_for_target_thread(
     target: TargetInfo,
     ports: List[int],
     settings: Settings,
@@ -697,6 +780,94 @@ def scan_ports_for_target(
         scanned_total=total_ports,
         duration_s=duration_s,
     )
+
+
+async def scan_ports_for_target_async(
+    target: TargetInfo,
+    ports: List[int],
+    settings: Settings,
+    show_progress: bool,
+) -> TargetScanResult:
+    started = time.monotonic()
+    total_ports = len(ports)
+    results_map: Dict[int, Tuple[bool, str]] = {}
+    semaphore = asyncio.Semaphore(settings.workers)
+
+    async def run_port(port: int) -> Tuple[int, bool, str]:
+        async with semaphore:
+            return await async_scan_port_with_retries(
+                target.ip,
+                port,
+                settings.timeout,
+                target.family,
+                settings.retries,
+                settings.retry_delay,
+                settings.retry_backoff,
+                settings.retry_on,
+                settings.banner,
+                settings.banner_timeout,
+                settings.banner_bytes,
+            )
+
+    tasks = []
+    for port in ports:
+        tasks.append(asyncio.create_task(run_port(port)))
+        if settings.delay > 0:
+            await asyncio.sleep(settings.delay)
+
+    done = 0
+    last_update = started
+    for task in asyncio.as_completed(tasks):
+        port_num, is_open, banner = await task
+        results_map[port_num] = (is_open, banner)
+        done += 1
+        now = time.monotonic()
+        if show_progress and (done == total_ports or (now - last_update) >= 0.1):
+            render_progress(done, total_ports, started)
+            last_update = now
+
+    if show_progress:
+        print()
+
+    results: List[Dict[str, object]] = []
+    for port in sorted(ports):
+        is_open, banner = results_map.get(port, (False, ""))
+        service = guess_service(port) if (is_open and settings.service) else ""
+        results.append(
+            {
+                "port": port,
+                "open": is_open,
+                "service": service,
+                "banner": banner,
+            }
+        )
+
+    duration_s = time.monotonic() - started
+    open_total = sum(1 for row in results if row["open"])
+    return TargetScanResult(
+        target=target,
+        results=results,
+        open_total=open_total,
+        scanned_total=total_ports,
+        duration_s=duration_s,
+    )
+
+
+def scan_ports_for_target(
+    target: TargetInfo,
+    ports: List[int],
+    settings: Settings,
+    show_progress: bool,
+) -> TargetScanResult:
+    if settings.engine == "thread":
+        return scan_ports_for_target_thread(target, ports, settings, show_progress)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(
+            scan_ports_for_target_async(target, ports, settings, show_progress)
+        )
+    return scan_ports_for_target_thread(target, ports, settings, show_progress)
 
 
 def write_output(
@@ -838,6 +1009,12 @@ def main(argv: Iterable[str]) -> int:
         type=int,
         default=None,
         help="Safety limit for number of targets (default: 1024)",
+    )
+    parser.add_argument(
+        "--engine",
+        choices=["async", "thread"],
+        default=None,
+        help="Scanning engine (async or thread)",
     )
     parser.add_argument(
         "--profile",
@@ -1008,6 +1185,7 @@ def main(argv: Iterable[str]) -> int:
     port_min = min(ports)
     port_max = max(ports)
     print(colorize("Targets:", "36", color_enabled), f"{len(targets_raw)}")
+    print(colorize("Engine:", "36", color_enabled), settings.engine)
     print(
         colorize("Ports:", "36", color_enabled),
         f"{port_min}..{port_max} ({len(ports)} total)",

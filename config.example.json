@@ -1,6 +1,7 @@
 {
   "hosts": "127.0.0.1,::1",
   "top20": true,
+  "engine": "async",
   "profile": "polite",
   "service": true,
   "output": "results.json",
