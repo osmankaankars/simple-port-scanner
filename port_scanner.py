@@ -18,6 +18,8 @@ TOOL_NAME = "Simple Port Scanner"
 __version__ = "2.0.0"
 
 
+# Keep these data tables compact and easy to scan by eye.
+# fmt: off
 COMMON_PORTS = [
     20, 21, 22, 23, 25, 53, 67, 68, 69, 80, 110, 111, 119, 123, 135, 137,
     138, 139, 143, 161, 162, 179, 389, 443, 445, 465, 514, 515, 587, 636,
@@ -33,6 +35,7 @@ TOP20_PORTS = [
     20, 21, 22, 23, 25, 53, 80, 110, 111, 135,
     139, 143, 443, 445, 993, 995, 1723, 3306, 3389, 5900,
 ]
+# fmt: on
 
 ALLOWED_CONFIG_KEYS = {
     "host",
@@ -237,8 +240,7 @@ def load_config(path: str) -> Dict[str, Any]:
             import yaml  # type: ignore
         except ImportError as exc:
             raise ConfigError(
-                "YAML config requested but PyYAML is not installed. "
-                "Install with: pip install pyyaml"
+                "YAML config requested but PyYAML is not installed. Install with: pip install pyyaml"
             ) from exc
         with open(path, "r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle)
@@ -282,9 +284,7 @@ def merge_settings(args: argparse.Namespace, config: Dict[str, Any]) -> Settings
     base_defaults = dict(DEFAULTS)
     if profile:
         if profile not in RATE_PROFILES:
-            raise ConfigError(
-                f"Unknown profile: {profile}. Choose from: {', '.join(sorted(RATE_PROFILES))}."
-            )
+            raise ConfigError(f"Unknown profile: {profile}. Choose from: {', '.join(sorted(RATE_PROFILES))}.")
         base_defaults.update(RATE_PROFILES[profile])
 
     targets_cli = {
@@ -383,9 +383,7 @@ def merge_settings(args: argparse.Namespace, config: Dict[str, Any]) -> Settings
         ]
     )
     if selection_count == 0:
-        raise ConfigError(
-            "Port selection is required (use --ports/--common/--top20 or set in config)."
-        )
+        raise ConfigError("Port selection is required (use --ports/--common/--top20 or set in config).")
     if selection_count > 1:
         raise ConfigError("Choose only one of ports, common, or top20.")
 
@@ -476,8 +474,7 @@ def collect_targets(settings: Settings) -> List[str]:
         )
     if len(targets) > settings.max_hosts:
         raise ConfigError(
-            f"Target count {len(targets)} exceeds max_hosts {settings.max_hosts}. "
-            "Increase --max-hosts to proceed."
+            f"Target count {len(targets)} exceeds max_hosts {settings.max_hosts}. Increase --max-hosts to proceed."
         )
     return targets
 
@@ -518,6 +515,7 @@ def address_for_family(ip: str, port: int, family: int) -> Tuple:
     if family == socket.AF_INET6:
         return (ip, port, 0, 0)
     return (ip, port)
+
 
 def connect_once(ip: str, port: int, timeout: float, family: int) -> int:
     with socket.socket(family, socket.SOCK_STREAM) as sock:
@@ -864,9 +862,7 @@ def scan_ports_for_target(
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(
-            scan_ports_for_target_async(target, ports, settings, show_progress)
-        )
+        return asyncio.run(scan_ports_for_target_async(target, ports, settings, show_progress))
     return scan_ports_for_target_thread(target, ports, settings, show_progress)
 
 
@@ -975,9 +971,7 @@ def write_output(
 
 
 def main(argv: Iterable[str]) -> int:
-    parser = argparse.ArgumentParser(
-        description="Simple TCP port scanner (educational)."
-    )
+    parser = argparse.ArgumentParser(description="Simple TCP port scanner (educational).")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--config",
@@ -1261,9 +1255,7 @@ def main(argv: Iterable[str]) -> int:
         total_scanned = sum(item.scanned_total for item in target_results)
         total_open = sum(item.open_total for item in target_results)
         print(colorize("Overall:", "36", color_enabled))
-        print(
-            f"Targets: {len(target_results)} | Scanned: {total_scanned} | Open: {total_open}"
-        )
+        print(f"Targets: {len(target_results)} | Scanned: {total_scanned} | Open: {total_open}")
         if failed_targets:
             print(f"Failed targets: {failed_targets}")
         print()
