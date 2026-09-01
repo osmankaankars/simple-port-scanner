@@ -14,7 +14,8 @@ or have explicit permission to assess.
 - Presets for common ports and top 20 ports
 - Timeouts, concurrency limits, and optional scheduling delays
 - Retry/backoff for transient failures
-- Rate-limit profiles (stealth, polite, normal, fast)
+- Rate-limit profiles (`stealth`, `polite`, `normal`, `fast`). The legacy `stealth` name means a
+  low-rate schedule with lower concurrency and added delay; it does not attempt detection evasion.
 - Optional banner grabbing (read-only, off by default)
 - Optional lightweight service guess for open ports
 - Output to text, JSON, or CSV (with open-only option)

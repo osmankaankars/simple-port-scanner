@@ -9,7 +9,7 @@ description = "Safe-by-default TCP port scanner for educational use."
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
-authors = [{ name = "osmankaankars" }]
+authors = [{ name = "Osman Kaan Kars" }]
 keywords = ["port-scanner", "tcp", "networking", "security", "cli"]
 classifiers = [
   "License :: OSI Approved :: MIT License",
